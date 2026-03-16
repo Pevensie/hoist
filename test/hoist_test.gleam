@@ -698,3 +698,14 @@ pub fn everything_test() {
       ],
     )
 }
+
+pub fn parse_with_hook_and_custom_error() {
+  let assert Ok(validated_flag_specs) = hoist.validate_flag_specs([])
+  assert Error(hoist.CustomError(1))
+    == hoist.parse_with_hook(
+      ["hello"],
+      validated_flag_specs,
+      Nil,
+      fn(_, _, _, _) { Error(1) },
+    )
+}

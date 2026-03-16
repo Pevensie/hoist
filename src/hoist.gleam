@@ -5,18 +5,20 @@ import gleam/result
 import gleam/set
 import gleam/string
 
-pub type ParseError {
+pub type ParseError(error) {
   /// A flag was encountered that was not defined upfront.
   UnknownFlag(String)
   /// A value was not defined for a value-type flag.
   ValueNotProvided(flag: String)
   /// A value was passed to a count-kind or toggle-kind flag.
   ValueNotSupported(flag: String, given: String)
+  /// A user provided error.
+  CustomError(value: error)
 }
 
-fn replace_error_flag_name(error: ParseError, flag_name: String) {
+fn replace_error_flag_name(error: ParseError(error), flag_name: String) {
   case error {
-    UnknownFlag(_) -> error
+    CustomError(_) | UnknownFlag(_) -> error
     ValueNotProvided(_) -> ValueNotProvided(flag_name)
     ValueNotSupported(given:, ..) -> ValueNotSupported(flag: flag_name, given:)
   }
@@ -204,7 +206,7 @@ pub type Args {
 pub fn parse(
   input: List(String),
   flags: ValidatedFlagSpecs,
-) -> Result(Args, ParseError) {
+) -> Result(Args, ParseError(error)) {
   parse_with_hook(input, flags, Nil, fn(state, _, _, flags) {
     Ok(#(state, flags))
   })
@@ -224,11 +226,11 @@ pub fn parse(
 pub fn parse_with_hook(
   input: List(String),
   flags: ValidatedFlagSpecs,
-  hook_state: a,
+  hook_state: hook_state,
   // TODO: custom error type
-  parse_hook: fn(a, String, Args, ValidatedFlagSpecs) ->
-    Result(#(a, ValidatedFlagSpecs), Nil),
-) -> Result(Args, ParseError) {
+  parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
+    Result(#(hook_state, ValidatedFlagSpecs), error),
+) -> Result(Args, ParseError(error)) {
   let state = Args(flags: [], arguments: [])
   do_parse(input, flags, Ok(state), hook_state, parse_hook)
 }
@@ -236,11 +238,11 @@ pub fn parse_with_hook(
 fn do_parse(
   remaining_input: List(String),
   flag_specs: ValidatedFlagSpecs,
-  state: Result(Args, ParseError),
-  hook_state: a,
-  parse_hook: fn(a, String, Args, ValidatedFlagSpecs) ->
-    Result(#(a, ValidatedFlagSpecs), Nil),
-) -> Result(Args, ParseError) {
+  state: Result(Args, ParseError(error)),
+  hook_state: hook_state,
+  parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
+    Result(#(hook_state, ValidatedFlagSpecs), error),
+) -> Result(Args, ParseError(error)) {
   // TODO: refactor to not use result.try as this prevents tail recursion.
   // Might not be necessary given the length of most commands, but definitely
   // something to take into consideration.
@@ -290,17 +292,17 @@ fn handle_positional(
   remaining_input: List(String),
   flag_specs: ValidatedFlagSpecs,
   state: Args,
-  hook_state: a,
-  parse_hook: fn(a, String, Args, ValidatedFlagSpecs) ->
-    Result(#(a, ValidatedFlagSpecs), Nil),
-) -> Result(Args, ParseError) {
+  hook_state: hook_state,
+  parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
+    Result(#(hook_state, ValidatedFlagSpecs), error),
+) -> Result(Args, ParseError(error)) {
   // TODO
   let new_args =
     Args(..state, arguments: list.append(state.arguments, [new_arg]))
 
   use #(new_hook_state, new_flag_specs) <- result.try(
     parse_hook(hook_state, new_arg, new_args, flag_specs)
-    |> result.replace_error(UnknownFlag("")),
+    |> result.map_error(CustomError),
   )
 
   do_parse(
@@ -317,10 +319,10 @@ fn handle_long_flag(
   remaining_input: List(String),
   flag_specs: ValidatedFlagSpecs,
   state: Args,
-  hook_state: a,
-  parse_hook: fn(a, String, Args, ValidatedFlagSpecs) ->
-    Result(#(a, ValidatedFlagSpecs), Nil),
-) -> Result(Args, ParseError) {
+  hook_state: hook_state,
+  parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
+    Result(#(hook_state, ValidatedFlagSpecs), error),
+) -> Result(Args, ParseError(error)) {
   // If the flag contains a `=` character, treat that as the value
   // and prepend it to the rest of the args to make processing easier
   // later (i.e. so we only have to process the case where the flag
@@ -409,10 +411,10 @@ fn handle_short_flag(
   remaining_input: List(String),
   flag_specs: ValidatedFlagSpecs,
   state: Args,
-  hook_state: a,
-  parse_hook: fn(a, String, Args, ValidatedFlagSpecs) ->
-    Result(#(a, ValidatedFlagSpecs), Nil),
-) -> Result(Args, ParseError) {
+  hook_state: hook_state,
+  parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
+    Result(#(hook_state, ValidatedFlagSpecs), error),
+) -> Result(Args, ParseError(error)) {
   let graphemes = string.to_graphemes(flag_names)
 
   case graphemes {

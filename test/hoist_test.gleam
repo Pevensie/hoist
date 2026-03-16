@@ -518,7 +518,7 @@ pub fn parse_with_hook_swaps_flags_test() {
   let assert Ok(initial_validated) = hoist.validate_flag_specs(initial_flags)
   let assert Ok(sub_validated) = hoist.validate_flag_specs(sub_flags)
 
-  let assert Ok(parsed) =
+  let assert #(True, Ok(parsed)) =
     hoist.parse_with_hook(
       ["--global", "gval", "sub", "--file", "test.txt"],
       initial_validated,
@@ -541,7 +541,7 @@ pub fn parse_with_hook_swaps_flags_test() {
 pub fn parse_with_hook_error_test() {
   let assert Ok(validated) = hoist.validate_flag_specs([])
 
-  let assert Error(_) =
+  let assert #(Nil, Error(_)) =
     hoist.parse_with_hook(
       ["allowed", "rejected"],
       validated,
@@ -701,11 +701,49 @@ pub fn everything_test() {
 
 pub fn parse_with_hook_and_custom_error() {
   let assert Ok(validated_flag_specs) = hoist.validate_flag_specs([])
-  assert Error(hoist.CustomError(1))
+  assert #(Nil, Error(hoist.CustomError(1)))
     == hoist.parse_with_hook(
       ["hello"],
       validated_flag_specs,
       Nil,
       fn(_, _, _, _) { Error(1) },
     )
+}
+
+pub fn parse_with_hook_returns_updated_state_on_error() {
+  let assert Ok(validated_flag_specs) = hoist.validate_flag_specs([])
+
+  assert #(1, Error(hoist.CustomError("unknown command")))
+    == hoist.parse_with_hook(
+      ["first", "second"],
+      validated_flag_specs,
+      0,
+      fn(_, argument, _, specs) {
+        case argument {
+          "first" -> Ok(#(1, specs))
+          "second" -> Error("unknown command")
+          _ -> panic
+        }
+      },
+    )
+}
+
+pub fn parse_with_hook_returns_updated_state_on_success() {
+  let assert Ok(validated_flag_specs) = hoist.validate_flag_specs([])
+
+  let assert #(2, Ok(args)) =
+    hoist.parse_with_hook(
+      ["first", "second"],
+      validated_flag_specs,
+      0,
+      fn(acc, argument, _, specs) {
+        case argument {
+          "first" -> Ok(#(acc + 1, specs))
+          "second" -> Ok(#(acc + 1, specs))
+          _ -> panic
+        }
+      },
+    )
+
+  assert hoist.Args(["first", "second"], flags: []) == args
 }

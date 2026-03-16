@@ -207,9 +207,12 @@ pub fn parse(
   input: List(String),
   flags: ValidatedFlagSpecs,
 ) -> Result(Args, ParseError(error)) {
-  parse_with_hook(input, flags, Nil, fn(state, _, _, flags) {
-    Ok(#(state, flags))
-  })
+  let #(_hook_state, outcome) =
+    parse_with_hook(input, flags, Nil, fn(state, _, _, flags) {
+      Ok(#(state, flags))
+    })
+
+  outcome
 }
 
 /// Similar to [`parse`](#parse) but allows passing a custom hook that gets called
@@ -227,10 +230,9 @@ pub fn parse_with_hook(
   input: List(String),
   flags: ValidatedFlagSpecs,
   hook_state: hook_state,
-  // TODO: custom error type
   parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
     Result(#(hook_state, ValidatedFlagSpecs), error),
-) -> Result(Args, ParseError(error)) {
+) -> #(hook_state, Result(Args, ParseError(error))) {
   let state = Args(flags: [], arguments: [])
   do_parse(input, flags, Ok(state), hook_state, parse_hook)
 }
@@ -242,48 +244,65 @@ fn do_parse(
   hook_state: hook_state,
   parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
     Result(#(hook_state, ValidatedFlagSpecs), error),
-) -> Result(Args, ParseError(error)) {
-  // TODO: refactor to not use result.try as this prevents tail recursion.
-  // Might not be necessary given the length of most commands, but definitely
-  // something to take into consideration.
-  use state <- result.try(state)
+) -> #(hook_state, Result(Args, ParseError(error))) {
+  case state {
+    Error(error) -> #(hook_state, Error(error))
+    Ok(state) -> {
+      case remaining_input {
+        [] -> #(hook_state, Ok(state))
 
-  case remaining_input {
-    [] -> Ok(state)
+        // Treat anything after bare `--` as positional args and end parsing here.
+        ["--", ..rest] -> {
+          let arguments = list.append(state.arguments, rest)
+          #(hook_state, Ok(Args(..state, arguments:)))
+        }
 
-    // Treat anything after bare `--` as positional args and end parsing here.
-    ["--", ..rest] ->
-      Ok(Args(..state, arguments: list.append(state.arguments, rest)))
-    // Treat `--` followed by a string as a flag. May have a value with
-    // `=`, or may be a bare flag with the value in the next arg.
-    ["--" <> flag_name, ..rest] ->
-      handle_long_flag(
-        flag_name,
-        rest,
-        flag_specs,
-        state,
-        hook_state,
-        parse_hook,
-      )
+        // Treat `--` followed by a string as a flag. May have a value with
+        // `=`, or may be a bare flag with the value in the next arg.
+        ["--" <> flag_name, ..rest] ->
+          handle_long_flag(
+            flag_name,
+            rest,
+            flag_specs,
+            state,
+            hook_state,
+            parse_hook,
+          )
 
-    // Treat bare `-` as positional.
-    ["-" as arg, ..rest] ->
-      handle_positional(arg, rest, flag_specs, state, hook_state, parse_hook)
+        // Treat bare `-` as positional.
+        ["-" as arg, ..rest] ->
+          handle_positional(
+            arg,
+            rest,
+            flag_specs,
+            state,
+            hook_state,
+            parse_hook,
+          )
 
-    // `-` followed by a value is one or more short flags.
-    ["-" <> flag_names, ..rest] ->
-      handle_short_flag(
-        flag_names,
-        rest,
-        flag_specs,
-        state,
-        hook_state,
-        parse_hook,
-      )
+        // `-` followed by a value is one or more short flags.
+        ["-" <> flag_names, ..rest] ->
+          handle_short_flag(
+            flag_names,
+            rest,
+            flag_specs,
+            state,
+            hook_state,
+            parse_hook,
+          )
 
-    // Anything else is positional
-    [arg, ..rest] ->
-      handle_positional(arg, rest, flag_specs, state, hook_state, parse_hook)
+        // Anything else is positional
+        [arg, ..rest] ->
+          handle_positional(
+            arg,
+            rest,
+            flag_specs,
+            state,
+            hook_state,
+            parse_hook,
+          )
+      }
+    }
   }
 }
 
@@ -295,23 +314,21 @@ fn handle_positional(
   hook_state: hook_state,
   parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
     Result(#(hook_state, ValidatedFlagSpecs), error),
-) -> Result(Args, ParseError(error)) {
-  // TODO
+) -> #(hook_state, Result(Args, ParseError(error))) {
   let new_args =
     Args(..state, arguments: list.append(state.arguments, [new_arg]))
 
-  use #(new_hook_state, new_flag_specs) <- result.try(
-    parse_hook(hook_state, new_arg, new_args, flag_specs)
-    |> result.map_error(CustomError),
-  )
-
-  do_parse(
-    remaining_input,
-    new_flag_specs,
-    Ok(new_args),
-    new_hook_state,
-    parse_hook,
-  )
+  case parse_hook(hook_state, new_arg, new_args, flag_specs) {
+    Error(error) -> #(hook_state, Error(CustomError(error)))
+    Ok(#(new_hook_state, new_flag_specs)) ->
+      do_parse(
+        remaining_input,
+        new_flag_specs,
+        Ok(new_args),
+        new_hook_state,
+        parse_hook,
+      )
+  }
 }
 
 fn handle_long_flag(
@@ -322,7 +339,7 @@ fn handle_long_flag(
   hook_state: hook_state,
   parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
     Result(#(hook_state, ValidatedFlagSpecs), error),
-) -> Result(Args, ParseError(error)) {
+) -> #(hook_state, Result(Args, ParseError(error))) {
   // If the flag contains a `=` character, treat that as the value
   // and prepend it to the rest of the args to make processing easier
   // later (i.e. so we only have to process the case where the flag
@@ -335,7 +352,7 @@ fn handle_long_flag(
   }
 
   case dict.get(flag_specs.long_flags, parsed_flag_name) {
-    Error(_) -> Error(UnknownFlag(parsed_flag_name))
+    Error(_) -> #(hook_state, Error(UnknownFlag(parsed_flag_name)))
     Ok(flag_spec) -> {
       case flag_spec.kind, has_equals_value {
         ValueKind, _ ->
@@ -357,50 +374,49 @@ fn handle_long_flag(
                 hook_state,
                 parse_hook,
               )
-            [] -> Error(ValueNotProvided(parsed_flag_name))
+
+            [] -> #(hook_state, Error(ValueNotProvided(parsed_flag_name)))
           }
 
         // If we had a value after `=` but this is not a value-kind
         // flag, then error.
         // TODO: decide if count-kind and toggle-kind flags can contain values
-        ToggleKind, True ->
-          Error(ValueNotSupported(
-            parsed_flag_name,
-            // This zero value will never be reached - we've already validated
-            // that there's another value in the list.
-            result.unwrap(list.first(remaining_input), ""),
-          ))
-        CountKind, True ->
-          Error(ValueNotSupported(
-            parsed_flag_name,
-            result.unwrap(list.first(remaining_input), ""),
-          ))
+        ToggleKind, True -> {
+          // This zero value will never be reached - we've already validated
+          // that there's another value in the list.
+          let given = result.unwrap(list.first(remaining_input), "")
+          let parse_error = ValueNotSupported(flag: parsed_flag_name, given:)
+          #(hook_state, Error(parse_error))
+        }
 
-        ToggleKind, False ->
+        CountKind, True -> {
+          let given = result.unwrap(list.first(remaining_input), "")
+          let parse_error = ValueNotSupported(flag: parsed_flag_name, given:)
+          #(hook_state, Error(parse_error))
+        }
+
+        ToggleKind, False -> {
+          let flag = ToggleFlag(name: flag_spec.name)
+          let flags = upsert_flag(flag, state.flags)
           do_parse(
             remaining_input,
             flag_specs,
-            Ok(
-              Args(
-                ..state,
-                flags: upsert_flag(
-                  ToggleFlag(name: flag_spec.name),
-                  state.flags,
-                ),
-              ),
-            ),
+            Ok(Args(..state, flags:)),
             hook_state,
             parse_hook,
           )
+        }
 
-        CountKind, False ->
+        CountKind, False -> {
+          let flags = upsert_count_flag(flag_spec, state.flags)
           do_parse(
             remaining_input,
             flag_specs,
-            Ok(Args(..state, flags: upsert_count_flag(flag_spec, state.flags))),
+            Ok(Args(..state, flags:)),
             hook_state,
             parse_hook,
           )
+        }
       }
     }
   }
@@ -414,7 +430,7 @@ fn handle_short_flag(
   hook_state: hook_state,
   parse_hook: fn(hook_state, String, Args, ValidatedFlagSpecs) ->
     Result(#(hook_state, ValidatedFlagSpecs), error),
-) -> Result(Args, ParseError(error)) {
+) -> #(hook_state, Result(Args, ParseError(error))) {
   let graphemes = string.to_graphemes(flag_names)
 
   case graphemes {
@@ -423,21 +439,25 @@ fn handle_short_flag(
 
     [short_flag, ..rest_flags] ->
       case dict.get(flag_specs.short_flags, short_flag) {
-        Error(_) -> Error(UnknownFlag(short_flag))
+        Error(_) -> #(hook_state, Error(UnknownFlag(short_flag)))
         Ok(flag) -> {
           case rest_flags {
             // For a length 1 list (e.g. `-x`), we can just look up the corresponding
             // long flag name and parse that.
-            [] ->
-              handle_long_flag(
-                flag.name,
-                remaining_input,
-                flag_specs,
-                state,
-                hook_state,
-                parse_hook,
-              )
-              |> result.map_error(replace_error_flag_name(_, short_flag))
+            [] -> {
+              let #(hook_state, result) =
+                handle_long_flag(
+                  flag.name,
+                  remaining_input,
+                  flag_specs,
+                  state,
+                  hook_state,
+                  parse_hook,
+                )
+              let result =
+                result.map_error(result, replace_error_flag_name(_, short_flag))
+              #(hook_state, result)
+            }
 
             // If the rest of the graphemes follow `=`, we assume the current flag is
             // the last one and any remaining graphemes make up the value passed
@@ -446,25 +466,24 @@ fn handle_short_flag(
               let value = string.concat(value_graphemes)
 
               case flag.kind {
-                ToggleKind | CountKind ->
-                  Error(ValueNotSupported(flag: short_flag, given: value))
+                ToggleKind | CountKind -> {
+                  let error = ValueNotSupported(flag: short_flag, given: value)
+                  #(hook_state, Error(error))
+                }
+
                 // Continue with regular parsing loop. We don't upsert value flags
                 // so they can be used for lists.
-                ValueKind ->
+                ValueKind -> {
+                  let flag = ValueFlag(name: flag.name, value:)
+                  let flags = list.append(state.flags, [flag])
                   do_parse(
                     remaining_input,
                     flag_specs,
-                    Ok(
-                      Args(
-                        ..state,
-                        flags: list.append(state.flags, [
-                          ValueFlag(name: flag.name, value:),
-                        ]),
-                      ),
-                    ),
+                    Ok(Args(..state, flags:)),
                     hook_state,
                     parse_hook,
                   )
+                }
               }
             }
 
@@ -472,40 +491,33 @@ fn handle_short_flag(
               case flag.kind {
                 // For a value flag we consume any remaining input as the value for
                 // that flag, then continue with the parse loop.
-                ValueKind ->
+                ValueKind -> {
+                  let flag =
+                    ValueFlag(name: flag.name, value: string.concat(rest_flags))
+                  let flags = upsert_flag(flag, state.flags)
                   do_parse(
                     remaining_input,
                     flag_specs,
-                    Ok(
-                      Args(
-                        ..state,
-                        flags: upsert_flag(
-                          ValueFlag(
-                            name: flag.name,
-                            value: string.concat(rest_flags),
-                          ),
-                          state.flags,
-                        ),
-                      ),
-                    ),
+                    Ok(Args(..state, flags:)),
                     hook_state,
                     parse_hook,
                   )
-                ToggleKind ->
+                }
+
+                ToggleKind -> {
+                  let flag = ToggleFlag(name: flag.name)
+                  let flags = upsert_flag(flag, state.flags)
+
                   handle_short_flag(
                     string.concat(rest_flags),
                     remaining_input,
                     flag_specs,
-                    Args(
-                      ..state,
-                      flags: upsert_flag(
-                        ToggleFlag(name: flag.name),
-                        state.flags,
-                      ),
-                    ),
+                    Args(..state, flags: flags),
                     hook_state,
                     parse_hook,
                   )
+                }
+
                 CountKind ->
                   handle_short_flag(
                     string.concat(rest_flags),

@@ -143,7 +143,16 @@ fn validate_single_flag_spec(
   Ok(flag_spec)
 }
 
-/// Validates flag specs
+/// Validates flag specs.
+///
+/// Ensures that every defined long flag and its aliases:
+/// - Have at least a one character name
+/// - Start with a letter or number
+/// - Only contain letters, numbers, hyphens and underscores
+///
+/// Ensures that every defined short flag:
+/// - Has exactly one character
+/// - Is a letter or number
 pub fn validate_flag_specs(
   flags: List(FlagSpec),
 ) -> Result(ValidatedFlagSpecs, List(FlagSpecValidationError)) {

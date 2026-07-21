@@ -36,9 +36,6 @@ and command arguments to `hoist.parse`.
 
 ```gleam
 import argv
-import gleam/int
-import gleam/io
-import gleam/list
 import hoist
 
 pub fn main() {
@@ -55,6 +52,7 @@ pub fn main() {
       |> hoist.as_toggle,
   ]
 
+  let assert Ok(flags) = hoist.validate_flag_specs(flag_specs)
   let assert Ok(args) = hoist.parse(argv.load().arguments, flag_specs)
 
   // $ gleam dev attack --target "The Black Pearl" -vvd --cannons 12

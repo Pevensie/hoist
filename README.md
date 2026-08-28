@@ -53,7 +53,7 @@ pub fn main() {
   ]
 
   let assert Ok(flags) = hoist.validate_flag_specs(flag_specs)
-  let assert Ok(args) = hoist.parse(argv.load().arguments, flag_specs)
+  let assert Ok(args) = hoist.parse(argv.load().arguments, flags)
 
   // $ gleam dev attack --target "The Black Pearl" -vvd --cannons 12
   //
